@@ -18,7 +18,8 @@ class pascal_dataloader:
         else:
             raise ValueError(f'mode must be 0 or 1')
         #read dataset from disk
-        self.data_set = open(self.dataset_path + d_set_name ,'r').read().split('\n')
+        self.data_set = open(self.dataset_path + d_set_name ,'r').read().split('\n')[:-1]
+
         #shuffle dataset
         random.shuffle(self.data_set)
 
@@ -29,64 +30,57 @@ class pascal_dataloader:
         self.classes = 20
         self.precell_len = np.array([x/self.S for x in self.size])
         self.batchsize = batchsize
-
-    def read(self, fname):
+    def __getfname(self):
+        return [random.randint(0,len(self.data_set)-1) for _ in range(self.batchsize)]
+    def read(self):
         '''
             從字串中分割所有物件的資訊
         '''
         def split_object(line):
             return [int(x) for x in line.split(' ')]
+        samplename = self.__getfname()
+        samples = []
+        labels = []
+        for s in samplename:
+            fname = self.data_set[s]
+            sample = tf.io.read_file(fname)
+            sample = tf.image.decode_jpeg(sample, channels=3)
+            sample = tf.image.convert_image_dtype(sample, tf.float32)
+            sample = tf.image.resize(sample,self.size)
 
-        sample = tf.io.read_file(fname)
-        sample = tf.image.decode_jpeg(sample, channels=3)
-        sample = tf.image.convert_image_dtype(sample, tf.float32)
-        sample = tf.image.resize(sample,self.size)
-        sample = tf.expand_dims(sample, axis= 0)
 
+            label = np.zeros([self.S,self.S, 5*(self.B)+self.classes])
+            with open(self.txt_sample_path + fname.split('\\')[-1].split('.')[0] + '.txt', mode='r') as f:
+                #get label from string , (class, x, y, w, h)    
+                objects = [split_object(x) for x in f.readlines()]
+            objects = np.stack(objects, axis=0)
+            for o in objects:
+                xy = np.array(o[1:3])
+                wh = np.array(o[3:5])
+                grid_y, grid_x = np.ceil(xy/self.precell_len).astype(np.int8)-1
+                rxry= np.array([grid_y+1,grid_x+1])*self.precell_len
+                
+                label[grid_y, grid_x, o[0]] = 1 #class
+                
+                label[grid_y, grid_x, 20:22] = (xy-rxry)/rxry #xy
+                label[grid_y, grid_x, 22:24] = (wh)/self.size #wh
+                label[grid_y, grid_x, 24:26] = (xy-rxry)/rxry #xy
+                label[grid_y, grid_x, 26:28] = (wh)/self.size #wh
 
-        label = np.zeros([self.S,self.S, 2*self.B+1+self.classes])
-        with open(self.txt_sample_path + fname.split('\\')[-1].split('.')[0] + '.txt', mode='r') as f:
-            #get label from string , (class, x, y, w, h)    
-            objects = [split_object(x) for x in f.readlines()]
-        objects = np.stack(objects, axis=0)
-        for o in objects:
-            xy = np.array(o[1:3])
-            wh = np.array(o[3:5])
-            grid_x, grid_y = np.ceil(xy/self.precell_len).astype(np.int8)-1
-            rxry = np.array([grid_x,grid_y])*self.precell_len
-            
-            label[grid_x, grid_y, o[0]] = 1 #class
-            
-            label[grid_x, grid_y, 20:22] = (xy-rxry)/rxry #xy
-            label[grid_x, grid_y, 22:24] = (wh)/self.size #wh
-            print((xy-rxry)/rxry)
-            print(label[grid_x, grid_y, 24:27])
-            label[grid_x, grid_y, 24:26] = (xy-rxry)/rxry #xy
-            label[grid_x, grid_y, 26:28] = (wh)/self.size #wh
+                label[grid_y, grid_x, 28] = 1 #conf
+                label[grid_y, grid_x, 29] = 1 #conf
+            samples.append(sample)
+            labels.append(label)
+        samples = tf.stack(samples, axis = 0)
+        labels = tf.stack(labels, axis = 0)
+        return samples.numpy(), labels.numpy()
 
-            label[grid_x, grid_y, 28] = 1 #conf
-            label[grid_x, grid_y, 29] = 1 #conf
-
-        label = tf.expand_dims(label, axis=0)
-        return sample.numpy(), label
-
-    def __next__(self):
-        current = 0
+    def generator(self):
         while True:
-            if current > len(self.data_set):
-                break
-            sample = []
-            label = []
+            yield self.read()
 
-            for data_idx in range(current,current+self.batchsize,1 ):
-                cur_sample,cur_label = self.read(self.data_set[data_idx])
-                sample.append(cur_sample)
-                label.append(cur_label)
-            current+=self.batchsize
-            
-            sample = tf.stack(sample,)
-            label = tf.stack(label, axis=0)
-            yield sample, label
+    def __call__(self):
+        return self.read()
 
 def main():
     '''
@@ -95,6 +89,7 @@ def main():
     dataset_path = 'E:\\dataset\\pascal2012'
     
     dataloader = pascal_dataloader(dataset_path, 16, mode=0)
-    sample,label = dataloader.__next__()
+    sample,label = dataloader.read()
+    
 if __name__ == "__main__":
     main()

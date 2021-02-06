@@ -42,7 +42,7 @@ class pascal_dataset:
 
         cur_sample = pascal_sample(img_name)
         img=mpimg.imread(self.image_path + img_name+'.jpg')
-        x,y,_ = img.shape
+        y,x,_ = img.shape
         x_scale = x/self.size[0]
         y_scale = y/self.size[1]
         for ob in object_node:
@@ -50,15 +50,23 @@ class pascal_dataset:
             category = ob.find('name').text
             #get bbox
             bbox = ob.find('bndbox')
-            xmin = int(int(float(bbox.find('xmin').text))*x_scale)
-            xmax = int(int(float(bbox.find('xmax').text))*x_scale)
-            ymin = int(int(float(bbox.find('ymin').text))*y_scale)
-            ymax = int(int(float(bbox.find('ymax').text))*y_scale)
+            xmin = int(int(float(bbox.find('xmin').text))/x_scale)
+            xmax = int(int(float(bbox.find('xmax').text))/x_scale)
+            ymin = int(int(float(bbox.find('ymin').text))/y_scale)
+            ymax = int(int(float(bbox.find('ymax').text))/y_scale)
             
             w = xmax - xmin
             h = ymax - ymin
             x_c = int(xmin+w/2)
             y_c = int(ymin+h/2)
+            for b in [w,h,x_c,y_c]:
+                if b > 448: 
+                    print(bbox.find('xmin').text)
+                    print(bbox.find('xmax').text)
+                    print(bbox.find('ymin').text)
+                    print(bbox.find('ymax').text)
+
+                    raise ValueError('zzz')
             cur_sample.objects.append(pascal_object(x_c,y_c,w,h,category))
         self.samples.append(cur_sample)
         
