@@ -159,7 +159,7 @@ class yolov1_loss(tf.keras.losses.Loss):
         y_pred = tf.reshape(y_pred, self.outputsize) # 7,7,30
 
         #區分有無物件
-        exist_object_mask = y_pred[...,-1] #最後一欄是conf
+        exist_object_mask = y_true[...,-1] #最後一欄是conf
         exist_object_mask = tf.tile(tf.expand_dims(exist_object_mask, axis=-1), [1,1,1,30])
 
         #為了計算iou提出BOX的部分
@@ -214,13 +214,13 @@ def test():
     #d = yololoss.darknet19()
     #d.summary()
     loss = yololoss.call(a,b)
+
 def train_test():
     yolo_model =yolov1(7,2,20)
     dataset_path = 'E:\\dataset\\pascal2012'
-    batch_size = 8
+    batch_size = 4
     train_gen = pascal_dataloader.pascal_dataloader(dataset_path, batch_size, mode=0)
     test_gen = pascal_dataloader.pascal_dataloader(dataset_path, batch_size, mode=1)
-    #a,b = test_gen.generator()
     
     yolo_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4), loss=yolov1_loss(batch_size))
 
@@ -228,5 +228,3 @@ def train_test():
     history = yolo_model.fit_generator(train_gen.generator(), steps_per_epoch=100, epochs=135, validation_data=test_gen.generator(), validation_steps=30,callbacks=callbacks)
 if __name__ =='__main__':
     train_test()
-    
-
