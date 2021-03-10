@@ -1,4 +1,6 @@
-test.*
+test*
+*.txt
+*.jpg
 __py*
 .vscode
-*/weights.h5
+*.hdf5

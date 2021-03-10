@@ -43,30 +43,21 @@ class pascal_dataset:
         cur_sample = pascal_sample(img_name)
         img=mpimg.imread(self.image_path + img_name+'.jpg')
         y,x,_ = img.shape
-        x_scale = x/self.size[0]
-        y_scale = y/self.size[1]
         for ob in object_node:
             #get object class
             category = ob.find('name').text
             #get bbox
             bbox = ob.find('bndbox')
-            xmin = int(int(float(bbox.find('xmin').text))/x_scale)
-            xmax = int(int(float(bbox.find('xmax').text))/x_scale)
-            ymin = int(int(float(bbox.find('ymin').text))/y_scale)
-            ymax = int(int(float(bbox.find('ymax').text))/y_scale)
+            #標準化
+            xmin = round(float(bbox.find('xmin').text)/x,6) 
+            xmax = round(float(bbox.find('xmax').text)/x,6)
+            ymin = round(float(bbox.find('ymin').text)/y,6)
+            ymax = round(float(bbox.find('ymax').text)/y,6)
             
-            w = xmax - xmin
-            h = ymax - ymin
-            x_c = int(xmin+w/2)
-            y_c = int(ymin+h/2)
-            for b in [w,h,x_c,y_c]:
-                if b > 448: 
-                    print(bbox.find('xmin').text)
-                    print(bbox.find('xmax').text)
-                    print(bbox.find('ymin').text)
-                    print(bbox.find('ymax').text)
-
-                    raise ValueError('zzz')
+            w = (xmax - xmin)
+            h = (ymax - ymin)
+            x_c = round(float(xmin+w/2),6)
+            y_c = round(float(ymin+h/2),6)
             cur_sample.objects.append(pascal_object(x_c,y_c,w,h,category))
         self.samples.append(cur_sample)
         
@@ -114,7 +105,8 @@ class pascal_dataset:
         random.shuffle(self.samples)
         train = self.samples[:math.floor(self.get_dataset_len() * tr)]
         test = self.samples[math.floor(self.get_dataset_len() * tr):]
-        
+        train = train[:10]
+        test = test[:10]
         self.__save_dataset_txt(train,0)
         self.__save_dataset_txt(test,1)
     
@@ -124,7 +116,7 @@ def main():
     parser.add_argument("--dataset_path", dest="dataset_path", type=str)
     args = parser.parse_args()
 
-    dataset = pascal_dataset(args.dataset_path,[448,448])
+    dataset = pascal_dataset(args.dataset_path,[224,224])
     dataset.parser()
     dataset.write2txt()
     dataset.split_dataset(0.7)
