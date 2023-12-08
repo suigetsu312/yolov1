@@ -1,7 +1,8 @@
 import tensorflow as tf
-
+import os
+import math
 class Stabilizer(tf.keras.callbacks.Callback):
-    def __init__(self,security_boundary=0.1):
+    def __init__(self, security_boundary=0.1):
         super(Stabilizer,self).__init__()
         self._security_boundary=1+security_boundary
         self._last_loss=None
@@ -13,6 +14,7 @@ class Stabilizer(tf.keras.callbacks.Callback):
         os.remove("stabilizer.hdf5")
     def on_epoch_end(self,epoch,logs={}):
         loss=logs.get('loss')
+        self.model.save_weights("D:/programming/MLDL/yolo_Tensorflow/model/1208/"+str(epoch) + ".hdf5") # for graphing or analysis
         if(math.isnan(loss)==True):
             for var in self.model.optimizer.variables():
                 var.assign(tf.zeros_like(var))

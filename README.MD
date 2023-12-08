@@ -1,3 +1,8 @@
 # yolov1 tensorflow implementation
 
-練習撰寫tensorflow
+---
+## enviroment
+
+docker run -it -v D:\programming\MLDL\yolo_Tensorflow:/code tensorflow/tensorflow:latest bash
+---
+

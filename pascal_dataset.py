@@ -105,8 +105,8 @@ class pascal_dataset:
         random.shuffle(self.samples)
         train = self.samples[:math.floor(self.get_dataset_len() * tr)]
         test = self.samples[math.floor(self.get_dataset_len() * tr):]
-        train = train[:10]
-        test = test[:10]
+        #train = train[]
+        #test = test[]
         self.__save_dataset_txt(train,0)
         self.__save_dataset_txt(test,1)
     

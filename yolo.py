@@ -1,9 +1,9 @@
 import math
 import os
-import cv2.cv2 as cv
+import cv2 as cv
 import numpy as np
 import tensorflow as tf
-import pascal_dataloader
+from pascal_dataloader import PascalDataLoader
 
 
 class conv2d_block(tf.Module):
@@ -102,7 +102,7 @@ class darknet19(tf.Module):
         return x
 
 class yolov1(tf.Module):
-    def __init__(self, S, B, C):
+    def __init__(self, S=7, B=2, C=20):
         super(yolov1, self).__init__(name='yolov1_model')
         self.S = S
         self.B = B
@@ -127,13 +127,15 @@ class yolov1_conv(tf.Module):
     def __call__(self, inputs):
         inputs = tf.reshape(inputs, [-1, self.S, self.S,(5*self.B+self.C)])
         xywh = inputs[...,self.C:self.C+4*self.B]
-        xy = tf.sigmoid(xywh[...,:2])
-        wh = xywh[...,2:]
-        
-        conf = tf.expand_dims(tf.sigmoid(inputs[...,-1]), axis=-1) 
+        xy1 = tf.sigmoid(xywh[...,:2])
+        wh1 = xywh[...,2:4]
+        xy2 = tf.sigmoid(xywh[...,4:6])
+        wh2 = xywh[...,6:8]
+
+        conf = tf.sigmoid(inputs[...,self.C+4*self.B:])
         classes = tf.nn.softmax(inputs[...,:self.C])
 
-        return tf.concat([classes, xy, wh, conf], axis=-1)
+        return tf.concat([classes, xy1, wh1, xy2, wh2, conf], axis=-1)
 
 class yolov1_loss(tf.Module):
     def __init__(self, batch_size=16, image_size=[224,224], S=7, 
@@ -152,14 +154,14 @@ class yolov1_loss(tf.Module):
         self.coord_scale = coord_scale
         self.__name__='yolov1_loss'
     def coordinate_loss(self, pred_xywh, true_xywh):
-        cood_loss= tf.reduce_sum(tf.square(pred_xywh-true_xywh), axis=3) 
-        return self.coord_scale * cood_loss
-        
-    def object_loss(self, pred_conf):
-        return self.obj_scale * tf.reduce_sum(tf.square(tf.ones_like(pred_conf)- pred_conf),axis=3)
+        coord_loss= tf.reduce_sum(tf.square(pred_xywh-true_xywh), axis=4)
+        return self.coord_scale * coord_loss
 
-    def noobject_loss(self, pred_conf):
-        return self.noobj_scale * tf.reduce_sum(tf.square(pred_conf),axis=3)
+    def object_loss(self, iou, pred_conf):
+        return self.obj_scale * tf.reduce_sum(tf.square(pred_conf- iou),axis=3, keepdims=True)
+
+    def noobject_loss(self, iou, pred_conf):
+        return self.noobj_scale * tf.reduce_sum(tf.square(pred_conf- iou),axis=3, keepdims=True)
 
     def class_loss(self, pred_classes, true_classes):
         class_loss = self.class_scale * tf.keras.losses.categorical_crossentropy(true_classes, pred_classes)
@@ -205,6 +207,7 @@ class yolov1_loss(tf.Module):
         w = np.tile(w, [7,1])
         grid = np.stack([w,h], axis=-1)
         grid_wh = tf.constant(grid, tf.float32)
+        grid_wh = tf.reshape(grid_wh, [1,7,7,2,1])
         return grid_wh
 
     def __call__(self, y_true, y_pred):
@@ -217,25 +220,40 @@ class yolov1_loss(tf.Module):
         |   classes *20 | box1 *4   | box 2 *4  | conf*2  |
 
         '''
-        ypred_bbox_offset = tf.reshape(tf.cast(y_pred[...,20:24], tf.float32) , [-1,7,7,4])
-        ytrue_bbox_offset = tf.reshape(tf.cast(y_true[...,20:24], tf.float32) , [-1,7,7,4])
+        ypred_bbox_offset = tf.reshape(tf.cast(y_pred[...,20:28], tf.float32) , [-1,7,7,2,4])
+        ytrue_bbox_offset = tf.reshape(tf.cast(y_true[...,20:28], tf.float32) , [-1,7,7,2,4])
                 
-        respon_mask = tf.reshape(tf.cast(y_true[...,-1] > 0, tf.float32), [-1,7,7]) 
+        ypred_bbox = tf.concat([
+            ypred_bbox_offset[...,:2] + self.grid(y_true),
+            ypred_bbox_offset[...,2:]
+        ], axis=-1)
+        
+        ytrue_bbox = tf.concat([
+            ytrue_bbox_offset[...,:2] + self.grid(y_true),
+            ytrue_bbox_offset[...,2:]
+        ], axis=-1)
+
+        respon_mask = tf.reshape(tf.cast(y_true[...,28:] > 0, tf.float32), [-1,7,7,2]) 
         '''
-            confidence loss     coordinate_loss     class_loss      
+            confidence loss     coordinate_loss     class_loss
                 positive
                 negative
         '''
-        coord_loss = self.coordinate_loss(ypred_bbox_offset,ytrue_bbox_offset) * respon_mask
-
-        conf_pred = tf.cast(tf.reshape(y_pred[...,-1],[-1,7,7,1]), tf.float32)
-        object_loss = self.object_loss(conf_pred) * respon_mask
-
-        no_object_loss = self.noobject_loss(conf_pred) * (1- respon_mask)
+        conf_pred = tf.cast(tf.reshape(y_pred[...,28:],[-1,7,7,2]), tf.float32)
+        iou_between_pred_true_box = self.calc_iou(ypred_bbox, ytrue_bbox)
+        iou_max = tf.expand_dims(tf.reduce_max(iou_between_pred_true_box, axis=3), axis=-1)
+        iou_mask = tf.equal(iou_between_pred_true_box, iou_max)
+        iou_mask = tf.cast(iou_mask, tf.float32)
+        iou_mask = iou_mask * conf_pred
+        object_mask = respon_mask * iou_mask
+        noobject_mask = 1-object_mask
+        coord_loss = tf.reduce_sum(self.coordinate_loss(ypred_bbox_offset,ytrue_bbox_offset) * object_mask, axis=3)
+        object_loss = tf.reduce_sum(self.object_loss(conf_pred,iou_between_pred_true_box) * object_mask, axis=3)
+        no_object_loss = tf.reduce_sum(self.noobject_loss(conf_pred,iou_between_pred_true_box) * (noobject_mask), axis=3)
 
         pred_class = tf.cast(tf.reshape(y_pred[...,:20],[-1,7,7,20]), tf.float32) 
         true_class = tf.cast(tf.reshape(y_true[...,:20],[-1,7,7,20]), tf.float32)
-        class_loss = self.class_loss( pred_class,true_class) * respon_mask
+        class_loss = self.class_loss( pred_class,true_class) * respon_mask[:,:,:,0]
             
         loss = tf.reduce_sum((coord_loss + object_loss + no_object_loss + class_loss), axis=[1,2]) 
         return loss
@@ -244,8 +262,8 @@ class yolov1_head(tf.Module):
     def __init__(self, 
                  orig_img_size,
                  class_num=20,
-                 iou_threshold = 0.5,
-                 scores_threshold = 0.4,
+                 iou_threshold = 1.0,
+                 scores_threshold = 0.8,
                  yolo_img_size=(224,224),
                  name = 'yolov1_head'):
         super(yolov1_head, self).__init__(name=name)
@@ -289,11 +307,10 @@ class yolov1_head(tf.Module):
         feature_hw = tf.cast(tf.shape(inputs_ts)[1:3], tf.float32) 
 
         pred_classes = tf.reshape(inputs_ts[...,:20], [-1,7,7,20])
-
         #把xywh換成xmax xmin ymax ymin
         pred_xywh = tf.reshape(inputs_ts[...,20:24], [-1,7,7,4])
         pred_xy = (pred_xywh[...,:2] + self.grid(inputs_ts)) / feature_hw[0]
-        pred_wh = np.exp(pred_xywh[...,2:])/7
+        pred_wh = tf.exp(pred_xywh[...,2:])/feature_hw[1]
         pred_x1y1 = pred_xy - pred_wh/2
         pred_x2y2 = pred_xy + pred_wh/2
         pred_box = tf.reshape(tf.concat([pred_x1y1, pred_x2y2], axis=-1),[-1,7,7,4]) 
@@ -309,13 +326,12 @@ class yolov1_head(tf.Module):
                                 tf.reshape(pred_scores, [-1,1])
                             ], axis=-1)
         return pred_boxes
-    def __call__(self, inputs_ts):    
+    def __call__(self, inputs_ts):
         pred_boxes = self.preprocess_box(inputs_ts)
         pred_classes = pred_boxes[...,0]
         pred_xywh = pred_boxes[...,1:5]
         pred_scores = pred_boxes[...,-1]
         result_boxes = tf.zeros([0,6])
-        print(pred_boxes)
         for i in range(self.class_num):
             class_mask = (pred_classes == i)
             _pred_xywh = tf.boolean_mask(pred_xywh, class_mask)
@@ -329,21 +345,35 @@ class yolov1_head(tf.Module):
                                         tf.reshape(_pred_scores, [-1,1])
                                     ], axis=-1)
             
+            # result_boxes = tf.concat([result_boxes, __pred_boxes],axis=0 ) 
             result_boxes = tf.concat([result_boxes, self.nms(__pred_boxes)],axis=0 ) 
             
         return result_boxes
 
 
 def loss_test():
-    dataset_path = 'E:\\dataset\\pascal2012'
-    d = pascal_dataloader.pascal_dataloader(dataset_path, 8, mode=0)
-    image, label = d.read()
+    dataset_path = 'D:\\programming\\MLDL\\dataset\\pascal2012'
+    test_gen = PascalDataLoader(dataset_path, 8, mode=0)
+    test_dataset = test_gen.create_dataset()
+    image, label = next(iter(test_dataset))
     c = tf.random.normal([8,7,7,30],0.5,0.25)
     b = tf.random.normal([8,7,7,30])
     l = label+1
     yololoss = yolov1_loss(batch_size=8)
-    loss = yololoss.call(label,label)
+    loss = yololoss.__call__(label,label)
     print(loss)
-    
+def t():
+    dataset_path = 'D:\\programming\\MLDL\\dataset\\pascal2012'
+    batch_size = 8
+    train_gen = pascal_dataloader.pascal_dataloader(dataset_path, batch_size, mode=0)
+
+    initial_learning_rate =1e-4
+    inputs_ts = tf.keras.Input([224,224,3])
+    outputs_ts = yolov1(S=7,B=2,C=20)(inputs_ts)
+    yolo_model = tf.keras.Model(inputs=inputs_ts, outputs=outputs_ts)
+    yolo_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=initial_learning_rate), loss=yolov1_loss(batch_size,B=2))
+    history = yolo_model.fit(train_gen.generator(), batch_size=batch_size, epochs=100, steps_per_epoch=10)
+
+    yolo_model.save_weights('model/full_train.hdf5')
 if __name__ =='__main__':
     loss_test()
